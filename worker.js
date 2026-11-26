@@ -75,6 +75,17 @@ export default {
     const origin = req.headers.get("Origin") || "";
     const c = cors(env, origin);
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: c.headers });
+    if (req.method === "GET" && new URL(req.url).searchParams.has("test")) { // 속도 점검: 짧은 질문을 보내고 모델별 결과와 걸린 시간을 알려 줘요.
+      if (!findKey(env)) return json({ ok: false, error: "키 없음" }, 200, c.headers);
+      env = { ...env, GEMINI_KEY: findKey(env) };
+      const out = []; const cands = env.MODEL ? [env.MODEL] : await pickModels(env);
+      for (const model of cands.slice(0, 3)) {
+        const t0 = Date.now(); const r = await ask(env, model, "안녕이라고만 답해 줘.", String(env.GEMINI_KEY).startsWith("AQ.") && false);
+        let m = ""; try { const j = await r.json(); m = (j.error && j.error.message ? String(j.error.message) : (((j.candidates || [])[0] || {}).content || { parts: [] }).parts.map(x => x.text || "").join("")).slice(0, 80); } catch (e) {}
+        out.push({ model, status: r.status, ms: Date.now() - t0, note: m }); if (r.ok) break;
+      }
+      return json({ ok: true, attempts: out }, 200, c.headers);
+    }
     if (req.method === "GET") { // 상태 확인용: 값은 보여 주지 않고, 키가 있는지와 설정 이름만 알려 줘요.
       return json({ ok: true, hasGeminiKey: !!findKey(env), bindingNames: Object.keys(env), model: env.MODEL || "gemini-2.5-flash" }, 200, { ...c.headers });
     }
