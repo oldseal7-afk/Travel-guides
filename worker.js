@@ -47,12 +47,27 @@ async function pickModels(env) {
   } catch (e) { return fallback; }
 }
 async function ask(env, model, prompt, vertex) {
+  try { return await ask0(env, model, prompt, vertex); } catch (e) { return new Response("{}", { status: 504 }); }
+}
+// 생각(thinking)을 줄이면 답이 훨씬 빨라져요. 모델이 지원하지 않으면 400이 오고, 그때는 설정 없이 다시 보내요.
+function thinkingFor(model) {
+  if (/gemini-3/.test(model)) return { thinkingLevel: "low" };
+  if (/gemini-2\.5-flash/.test(model)) return { thinkingBudget: 0 };
+  return null;
+}
+async function ask0(env, model, prompt, vertex, noThink) {
   const base = vertex ? "https://aiplatform.googleapis.com/v1/publishers/google/models/" : "https://generativelanguage.googleapis.com/v1beta/models/";
-  return fetch(base + encodeURIComponent(model) + ":generateContent", {
+  const th = noThink ? null : thinkingFor(model);
+  const generationConfig = { maxOutputTokens: 4096 };
+  if (th) generationConfig.thinkingConfig = th;
+  const r = await fetch(base + encodeURIComponent(model) + ":generateContent", {
     method: "POST",
+    signal: AbortSignal.timeout(22000),
     headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_KEY },
-    body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 4096 } }),
+    body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig }),
   });
+  if (r.status === 400 && th) return ask0(env, model, prompt, vertex, true);
+  return r;
 }
 
 export default {
@@ -83,13 +98,14 @@ export default {
     let vertex = false;
     const cands = env.MODEL ? [env.MODEL] : await pickModels(env);
     let r = null;
-    for (const model of cands.slice(0, 4)) {
+    for (const model of cands.slice(0, 3)) {
       r = await ask(env, model, prompt, vertex);
+      if (r.status === 503) { await new Promise(res => setTimeout(res, 800)); r = await ask(env, model, prompt, vertex); } // 과부하면 한 번 더
       if (!r.ok && maybeVertex && !vertex && (r.status === 400 || r.status === 401 || r.status === 403)) {
         const r2 = await ask(env, model, prompt, true);
         if (r2.ok || r2.status === 429) { r = r2; vertex = true; }
       }
-      if (r.ok || (r.status !== 404 && r.status !== 429 && r.status !== 400)) break; // 모델 문제일 때만 다음 모델로 넘어가요
+      if (r.ok || ![400, 404, 429, 500, 503, 504].includes(r.status)) break; // 모델 문제나 일시적 과부하일 때만 다음 모델로 넘어가요
     }
     let j = null; try { j = await r.json(); } catch (e) {}
     if (!r.ok) {
