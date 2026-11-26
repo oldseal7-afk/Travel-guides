@@ -20,8 +20,9 @@ function cors(env, origin) {
 }
 const json = (o, status, h) => new Response(JSON.stringify(o), { status, headers: { ...h, "content-type": "application/json; charset=utf-8" } });
 
-async function ask(env, model, prompt) {
-  return fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent", {
+async function ask(env, model, prompt, vertex) {
+  const base = vertex ? "https://aiplatform.googleapis.com/v1/publishers/google/models/" : "https://generativelanguage.googleapis.com/v1beta/models/";
+  return fetch(base + encodeURIComponent(model) + ":generateContent", {
     method: "POST",
     headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_KEY },
     body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 4096 } }),
@@ -48,8 +49,15 @@ export default {
     hits.set(key, (hits.get(key) || 0) + 1);
 
     const model = env.MODEL || "gemini-2.5-flash";
-    let r = await ask(env, model, prompt);
-    if ((r.status === 429 || r.status === 404) && model !== "gemini-2.5-flash-lite") r = await ask(env, "gemini-2.5-flash-lite", prompt);
+    // AQ.로 시작하는 키는 Google Cloud(Vertex AI)용일 수 있어, 먼저 AI Studio 방식으로 시도하고 안 되면 Vertex 방식으로 시도해요.
+    const maybeVertex = String(env.GEMINI_KEY).startsWith("AQ.");
+    let vertex = false;
+    let r = await ask(env, model, prompt, false);
+    if (maybeVertex && (r.status === 400 || r.status === 401 || r.status === 403)) {
+      const r2 = await ask(env, model, prompt, true);
+      if (r2.ok || r2.status === 429) { r = r2; vertex = true; }
+    }
+    if ((r.status === 429 || r.status === 404) && model !== "gemini-2.5-flash-lite") r = await ask(env, "gemini-2.5-flash-lite", prompt, vertex);
     let j = null; try { j = await r.json(); } catch (e) {}
     if (!r.ok) {
       const m = j && j.error && j.error.message ? String(j.error.message).slice(0, 120) : "";
