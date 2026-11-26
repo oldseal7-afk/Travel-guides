@@ -5,6 +5,6 @@
   "workers_dev": true,
   "vars": {
     "ALLOWED_ORIGINS": "https://oldseal7-afk.github.io",
-    "DAILY_LIMIT": "20"
+    "DAILY_LIMIT": "25"
   }
 }
