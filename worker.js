@@ -26,6 +26,26 @@ function cors(env, origin) {
 }
 const json = (o, status, h) => new Response(JSON.stringify(o), { status, headers: { ...h, "content-type": "application/json; charset=utf-8" } });
 
+let modelCache = { at: 0, list: [] };
+async function pickModels(env) {
+  const now = Date.now();
+  if (modelCache.list.length && now - modelCache.at < 3600e3) return modelCache.list;
+  const fallback = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"];
+  try {
+    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", { headers: { "x-goog-api-key": env.GEMINI_KEY } });
+    if (!r.ok) return fallback;
+    const j = await r.json();
+    const ver = n => { const m = String(n).match(/(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : 0; };
+    const bad = /lite|preview|exp|image|tts|audio|live|embed|thinking|vision|robotics|computer|customtools|\d{4}-\d{2}-\d{2}|-\d{3}$/i;
+    const names = (j.models || []).filter(m => (m.supportedGenerationMethods || []).includes("generateContent")).map(m => String(m.name || "").replace(/^models\//, ""));
+    const flash = names.filter(n => /^gemini-/.test(n) && /flash/.test(n) && !bad.test(n)).sort((a, b) => ver(b) - ver(a) || a.length - b.length);
+    const lite = names.filter(n => /^gemini-/.test(n) && /flash-lite/.test(n) && !/preview|exp/.test(n)).sort((a, b) => ver(b) - ver(a));
+    const list = [...flash, ...lite];
+    if (!list.length) return fallback;
+    modelCache = { at: now, list };
+    return list;
+  } catch (e) { return fallback; }
+}
 async function ask(env, model, prompt, vertex) {
   const base = vertex ? "https://aiplatform.googleapis.com/v1/publishers/google/models/" : "https://generativelanguage.googleapis.com/v1beta/models/";
   return fetch(base + encodeURIComponent(model) + ":generateContent", {
@@ -58,16 +78,19 @@ export default {
     if (!prompt || prompt.length > MAX_PROMPT) return json({ error: "요청문이 비었거나 너무 길어요." }, 400, c.headers);
     hits.set(key, (hits.get(key) || 0) + 1);
 
-    const model = env.MODEL || "gemini-2.5-flash";
-    // AQ.로 시작하는 키는 Google Cloud(Vertex AI)용일 수 있어, 먼저 AI Studio 방식으로 시도하고 안 되면 Vertex 방식으로 시도해요.
+    // 모델 이름은 Google이 자주 바꿔서, 지금 쓸 수 있는 모델 목록에서 알아서 골라요. (환경 변수 MODEL로 직접 정할 수도 있어요)
     const maybeVertex = String(env.GEMINI_KEY).startsWith("AQ.");
     let vertex = false;
-    let r = await ask(env, model, prompt, false);
-    if (maybeVertex && (r.status === 400 || r.status === 401 || r.status === 403)) {
-      const r2 = await ask(env, model, prompt, true);
-      if (r2.ok || r2.status === 429) { r = r2; vertex = true; }
+    const cands = env.MODEL ? [env.MODEL] : await pickModels(env);
+    let r = null;
+    for (const model of cands.slice(0, 4)) {
+      r = await ask(env, model, prompt, vertex);
+      if (!r.ok && maybeVertex && !vertex && (r.status === 400 || r.status === 401 || r.status === 403)) {
+        const r2 = await ask(env, model, prompt, true);
+        if (r2.ok || r2.status === 429) { r = r2; vertex = true; }
+      }
+      if (r.ok || (r.status !== 404 && r.status !== 429 && r.status !== 400)) break; // 모델 문제일 때만 다음 모델로 넘어가요
     }
-    if ((r.status === 429 || r.status === 404) && model !== "gemini-2.5-flash-lite") r = await ask(env, "gemini-2.5-flash-lite", prompt, vertex);
     let j = null; try { j = await r.json(); } catch (e) {}
     if (!r.ok) {
       const m = j && j.error && j.error.message ? String(j.error.message).slice(0, 120) : "";
