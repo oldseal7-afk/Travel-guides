@@ -5,6 +5,12 @@
 //   Variable DAILY_LIMIT      : (선택) 사람(IP) 한 명당 하루 최대 횟수, 기본 20
 //   Variable MODEL            : (선택) 기본 gemini-2.5-flash
 const MAX_PROMPT = 12000;
+// 이름에 공백이나 대소문자 실수가 있어도 GEMINI_KEY를 찾아요.
+function findKey(env) {
+  if (env.GEMINI_KEY) return env.GEMINI_KEY;
+  for (const k of Object.keys(env)) { if (String(k).trim().toUpperCase().replace(/[\s-]+/g, "_") === "GEMINI_KEY" && typeof env[k] === "string") return env[k]; }
+  return "";
+}
 const hits = new Map(); // 같은 서버 인스턴스 안에서만 세는 간단한 횟수 제한
 
 function cors(env, origin) {
@@ -34,9 +40,13 @@ export default {
     const origin = req.headers.get("Origin") || "";
     const c = cors(env, origin);
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: c.headers });
+    if (req.method === "GET") { // 상태 확인용: 값은 보여 주지 않고, 키가 있는지와 설정 이름만 알려 줘요.
+      return json({ ok: true, hasGeminiKey: !!findKey(env), bindingNames: Object.keys(env), model: env.MODEL || "gemini-2.5-flash" }, 200, { ...c.headers });
+    }
     if (req.method !== "POST") return json({ error: "POST만 받아요." }, 405, c.headers);
     if (!c.ok) return json({ error: "허용되지 않은 사이트예요." }, 403, c.headers);
-    if (!env.GEMINI_KEY) return json({ error: "서버에 AI 키가 설정되지 않았어요." }, 500, c.headers);
+    if (!findKey(env)) return json({ error: "서버에 AI 키가 설정되지 않았어요. (설정된 이름: " + Object.keys(env).join(", ") + ")" }, 500, c.headers);
+    env = { ...env, GEMINI_KEY: findKey(env) };
 
     const ip = req.headers.get("CF-Connecting-IP") || "?";
     const day = new Date().toISOString().slice(0, 10), key = day + "|" + ip, limit = parseInt(env.DAILY_LIMIT || "20", 10) || 20;
