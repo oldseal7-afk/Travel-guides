@@ -30,7 +30,7 @@ let modelCache = { at: 0, list: [] };
 async function pickModels(env) {
   const now = Date.now();
   if (modelCache.list.length && now - modelCache.at < 3600e3) return modelCache.list;
-  const fallback = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"];
+  const fallback = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"];
   try {
     const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", { headers: { "x-goog-api-key": env.GEMINI_KEY } });
     if (!r.ok) return fallback;
@@ -40,7 +40,9 @@ async function pickModels(env) {
     const names = (j.models || []).filter(m => (m.supportedGenerationMethods || []).includes("generateContent")).map(m => String(m.name || "").replace(/^models\//, ""));
     const flash = names.filter(n => /^gemini-/.test(n) && /flash/.test(n) && !bad.test(n)).sort((a, b) => ver(b) - ver(a) || a.length - b.length);
     const lite = names.filter(n => /^gemini-/.test(n) && /flash-lite/.test(n) && !/preview|exp/.test(n)).sort((a, b) => ver(b) - ver(a));
-    const list = [...flash, ...lite];
+    // 가장 새 모델은 수요가 몰려 느리거나 멈추는 일이 많아서, 오래 검증된 모델을 먼저 시도해요.
+    const first = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"].filter(n => names.includes(n));
+    const list = [...new Set([...first, ...flash, ...lite])];
     if (!list.length) return fallback;
     modelCache = { at: now, list };
     return list;
@@ -62,7 +64,7 @@ async function ask0(env, model, prompt, vertex, noThink) {
   if (th) generationConfig.thinkingConfig = th;
   const r = await fetch(base + encodeURIComponent(model) + ":generateContent", {
     method: "POST",
-    signal: AbortSignal.timeout(22000),
+    signal: AbortSignal.timeout(15000),
     headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_KEY },
     body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig }),
   });
@@ -78,8 +80,8 @@ export default {
     if (req.method === "GET" && new URL(req.url).searchParams.has("test")) { // 속도 점검: 짧은 질문을 보내고 모델별 결과와 걸린 시간을 알려 줘요.
       if (!findKey(env)) return json({ ok: false, error: "키 없음" }, 200, c.headers);
       env = { ...env, GEMINI_KEY: findKey(env) };
-      const out = []; const cands = env.MODEL ? [env.MODEL] : await pickModels(env);
-      for (const model of cands.slice(0, 3)) {
+      const out = []; const qm = new URL(req.url).searchParams.get("model"); const cands = qm ? [qm] : env.MODEL ? [env.MODEL] : await pickModels(env);
+      for (const model of cands.slice(0, 4)) {
         const t0 = Date.now(); const r = await ask(env, model, "안녕이라고만 답해 줘.", String(env.GEMINI_KEY).startsWith("AQ.") && false);
         let m = ""; try { const j = await r.json(); m = (j.error && j.error.message ? String(j.error.message) : (((j.candidates || [])[0] || {}).content || { parts: [] }).parts.map(x => x.text || "").join("")).slice(0, 80); } catch (e) {}
         out.push({ model, status: r.status, ms: Date.now() - t0, note: m }); if (r.ok) break;
@@ -109,7 +111,7 @@ export default {
     let vertex = false;
     const cands = env.MODEL ? [env.MODEL] : await pickModels(env);
     let r = null;
-    for (const model of cands.slice(0, 3)) {
+    for (const model of cands.slice(0, 4)) {
       r = await ask(env, model, prompt, vertex);
       if (r.status === 503) { await new Promise(res => setTimeout(res, 800)); r = await ask(env, model, prompt, vertex); } // 과부하면 한 번 더
       if (!r.ok && maybeVertex && !vertex && (r.status === 400 || r.status === 401 || r.status === 403)) {
