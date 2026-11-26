@@ -1,0 +1,10 @@
+{
+  "name": "travel-guides",
+  "main": "worker.js",
+  "compatibility_date": "2025-01-01",
+  "workers_dev": true,
+  "vars": {
+    "ALLOWED_ORIGINS": "https://oldseal7-afk.github.io",
+    "DAILY_LIMIT": "20"
+  }
+}
